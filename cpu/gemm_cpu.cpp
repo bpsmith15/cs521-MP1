@@ -1,5 +1,6 @@
 #include <chrono>
 #include "../include/utils.h"
+#include <algorithm>
 
 #define NUM_RUNS 2
 
@@ -46,15 +47,69 @@ void gemm_cpu_o0(float* A, float* B, float *C, int M, int N, int K) {
 // note that for o4 you don't have to change the code, but just the compiler flags. So, you can use o3's code for that part
 void gemm_cpu_o1(float* A, float* B, float *C, int M, int N, int K) {
 
+	// we want to increment along contiguous memory locations, since i is always multiplied by something, 
+	// we want it on the outside
+	for (int i = 0; i < M; i++) {
+
+		// we do increment by just k in one place, but we also jump in k steps of N in another, so it'll go in the middle
+		for (int k = 0; k < K; k++) {
+
+			// since we increment by just j in two places, placing it on the innermost loop will hopefully keep those arrays in the cache
+			for (int j = 0; j < N; j++) {
+				C[i * N + j]  += A[i * K + k]  * B[k * N + j];
+			}
+		}
+	}
 }
 
 void gemm_cpu_o2(float* A, float* B, float *C, int M, int N, int K) {
+	// cache size of the colab machine is 
+	// L1d cache:                               32 KiB (1 instance)
+	// L1i cache:                               32 KiB (1 instance)
+	// We care about the L1d cache in this instance (although they are identical here),
+	// so 32KiB is our size. The machine is a 64-bit machine, so each int is 4 bytes
+	// we have three arrays we want to keep in the cache, which means we can only use
+	// 1/3 of the cache for each array, or ~10KiB. TODO figure out step math
 
+	int step = 50;
+	
+	// spec says to only tile inner two loops
+	for (int i = 0; i < M; i++) {
+		for (int kk = 0; kk < K; kk += step) {
+			for (int jj = 0; jj < N; jj += step) {
+
+				for (int k = kk; k < std::min(kk + step, K); k++) {
+					for (int j = jj; j < std::min(jj + step, N); j++) {
+						C[i * N + j]  += A[i * K + k]  * B[k * N + j];
+					}
+				}
+			}
+		}
+	}
 }
 
 void gemm_cpu_o3(float* A, float* B, float *C, int M, int N, int K) {
+	int step = 50;
+	
+	// Parallelize the outer loop(s) using OpenMP
+	#pragma omp parallel for
+	for (int i = 0; i < M; i++) {
+		#pragma omp parallel for
+		for (int kk = 0; kk < K; kk += step) {
+			#pragma omp parallel for
+			for (int jj = 0; jj < N; jj += step) {
 
-}
+				#pragma omp parallel for
+				for (int k = kk; k < std::min(kk + step, K); k++) {
+					// vectorize the inner loop
+					#pragma omp simd
+					for (int j = jj; j < std::min(jj + step, N); j++) {
+						C[i * N + j]  += A[i * K + k]  * B[k * N + j];
+					}
+				}
+			}
+		}
+	}
 
 
 int main(int argc, char* argv[]) {

@@ -76,10 +76,14 @@ void gemm_cpu_o2(float* A, float* B, float *C, int M, int N, int K) {
 	
 	// spec says to only tile inner two loops
 	for (int i = 0; i < M; i++) {
-		for (int jj = 0; jj < N; jj += step) {
-			for (int kk = 0; kk < K; kk += step) {
-				for (int k = kk; k < std::min(kk + step, K); k++) {
-					for (int j = jj; j < std::min(jj + step, N); j++) {
+		for (int kk = 0; kk < K; kk += step) {
+			int k_end = std::min(kk + step, K);
+
+			for (int jj = 0; jj < N; jj += step) {
+				int j_end = std::min(jj + step, N);
+
+				for (int k = kk; k < k_end; k++) {
+					for (int j = jj; j < j_end; j++) {
 						C[i * N + j] += A[i * K + k] * B[k * N + j];
 					}
 				}
@@ -95,15 +99,19 @@ void gemm_cpu_o3(float* A, float* B, float *C, int M, int N, int K) {
 	#pragma omp parallel for
 	for (int i = 0; i < M; i++) {
 		#pragma omp parallel for
-		for (int kk = 0; kk < K; kk += step) {
+		for (int jj = 0; jj < N; jj += step) {
+			int j_end = std::min(jj + step, N);
+
 			#pragma omp parallel for
-			for (int jj = 0; jj < N; jj += step) {
+			for (int kk = 0; kk < K; kk += step) {
+				int k_end = std::min(kk + step, K);
 
 				#pragma omp parallel for
-				for (int k = kk; k < std::min(kk + step, K); k++) {
+				for (int k = kk; k < k_end; k++) {
+
 					// vectorize the inner loop
 					#pragma omp simd
-					for (int j = jj; j < std::min(jj + step, N); j++) {
+					for (int j = jj; j < j_end; j++) {
 						C[i * N + j]  += A[i * K + k]  * B[k * N + j];
 					}
 				}

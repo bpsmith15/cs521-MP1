@@ -68,19 +68,19 @@ void gemm_cpu_o2(float* A, float* B, float *C, int M, int N, int K) {
 	// L1i cache:                               32 KiB (1 instance)
 	// We care about the L1d cache in this instance (although they are identical here),
 	// so 32KiB is our size. The machine is a 64-bit machine, so each int is 4 bytes
-	// we have three arrays we want to keep in the cache, which means we can only use
-	// 1/3 of the cache for each array, or ~10KiB. TODO figure out step math
+	// we have three arrays we want to keep in the cache each array traverses
+	// step * step * sizeof(float) each inner loop iteration
+	// so we want (step^2 * 4) * 3 < 32KiB -> step < 51.6
 
-	int step = 50;
+	int step = 40;
 	
 	// spec says to only tile inner two loops
 	for (int i = 0; i < M; i++) {
-		for (int kk = 0; kk < K; kk += step) {
-			for (int jj = 0; jj < N; jj += step) {
-
+		for (int jj = 0; jj < N; jj += step) {
+			for (int kk = 0; kk < K; kk += step) {
 				for (int k = kk; k < std::min(kk + step, K); k++) {
 					for (int j = jj; j < std::min(jj + step, N); j++) {
-						C[i * N + j]  += A[i * K + k]  * B[k * N + j];
+						C[i * N + j] += A[i * K + k] * B[k * N + j];
 					}
 				}
 			}
@@ -110,6 +110,7 @@ void gemm_cpu_o3(float* A, float* B, float *C, int M, int N, int K) {
 			}
 		}
 	}
+}
 
 
 int main(int argc, char* argv[]) {

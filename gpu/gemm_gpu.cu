@@ -102,26 +102,107 @@ void gemm_gpu_o0(float* A, float* B, float* C, int M, int N, int K)
 	gemm_gpu_o0_kernel<<<gridSize, blockSize>>>(A, B, C, M, N, K);
 }
 
-// The scafolding for optimized GEMM implementations
-__global__ void gemm_gpu_o1_kernel(float* A, float* B, float *C, int M, int N, int K) {
+__global__ void gemm_gpu_o1_kernel(float* A, float* B, float* C, int M, int N, int K) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row < M && col < N) {
+        float acc = 0.0f;
+        for (int k = 0; k < K; k++) {
+            acc += A[row * K + k] * B[k * N + col];
+        }
+
+        C[row * N + col] = acc;
+    }
 }
+
 void gemm_gpu_o1(float* A, float* B, float* C, int M, int N, int K)
 {
-	// Init block and grid size
+    dim3 blockSize(16, 16);
+    dim3 gridSize((N + blockSize.x - 1) / blockSize.x,
+                  (M + blockSize.y - 1) / blockSize.y);
+
+    gemm_gpu_o1_kernel<<<gridSize, blockSize>>>(A, B, C, M, N, K);
 }
 
-__global__ void gemm_gpu_o2_kernel(float* A, float* B, float *C, int M, int N, int K) {
+#define TILE 16
+
+__global__ void gemm_gpu_o2_kernel(float* A, float* B, float* C, int M, int N, int K) {
+    __shared__ float As[TILE][TILE];
+    __shared__ float Bs[TILE][TILE];
+
+    int row = blockIdx.y * TILE + threadIdx.y;
+    int col = blockIdx.x * TILE + threadIdx.x;
+
+    float acc = 0.0f;
+
+    int numTiles = (K + TILE - 1) / TILE;
+    for (int t = 0; t < numTiles; t++) {
+        int aCol = t * TILE + threadIdx.x;
+        int bRow = t * TILE + threadIdx.y;
+
+        As[threadIdx.y][threadIdx.x] = (row < M && aCol < K) ? A[row * K + aCol] : 0.0f;
+        Bs[threadIdx.y][threadIdx.x] = (bRow < K && col < N) ? B[bRow * N + col] : 0.0f;
+
+        __syncthreads();  // wait for whole tile to be loaded
+
+        for (int k = 0; k < TILE; k++) {
+            acc += As[threadIdx.y][k] * Bs[k][threadIdx.x];
+        }
+
+        __syncthreads();  // wait before overwriting shared mem next iteration
+    }
+
+    if (row < M && col < N) {
+        C[row * N + col] = acc;
+    }
 }
+
 void gemm_gpu_o2(float* A, float* B, float* C, int M, int N, int K)
 {
-	// Init block and grid size
+    dim3 blockSize(TILE, TILE);
+    dim3 gridSize((N + TILE - 1) / TILE, (M + TILE - 1) / TILE);
+    gemm_gpu_o2_kernel<<<gridSize, blockSize>>>(A, B, C, M, N, K);
 }
 
-__global__ void gemm_gpu_o3_kernel(float* A, float* B, float *C, int M, int N, int K) {
+#define BETTER_TILE 32
+
+__global__ void gemm_gpu_o3_kernel(float* A, float* B, float* C, int M, int N, int K) {
+    __shared__ float As[BETTER_TILE][BETTER_TILE];
+    __shared__ float Bs[BETTER_TILE][BETTER_TILE];
+
+    int row = blockIdx.y * BETTER_TILE + threadIdx.y;
+    int col = blockIdx.x * BETTER_TILE + threadIdx.x;
+
+    float acc = 0.0f;
+
+    int numTiles = (K + BETTER_TILE - 1) / BETTER_TILE;
+    for (int t = 0; t < numTiles; t++) {
+        int aCol = t * BETTER_TILE + threadIdx.x;
+        int bRow = t * BETTER_TILE + threadIdx.y;
+
+        As[threadIdx.y][threadIdx.x] = (row < M && aCol < K) ? A[row * K + aCol] : 0.0f;
+        Bs[threadIdx.y][threadIdx.x] = (bRow < K && col < N) ? B[bRow * N + col] : 0.0f;
+
+        __syncthreads();  // wait for whole tile to be loaded
+
+        for (int k = 0; k < TILE; k++) {
+            acc += As[threadIdx.y][k] * Bs[k][threadIdx.x];
+        }
+
+        __syncthreads();  // wait before overwriting shared mem next iteration
+    }
+
+    if (row < M && col < N) {
+        C[row * N + col] = acc;
+    }
 }
+
 void gemm_gpu_o3(float* A, float* B, float* C, int M, int N, int K)
 {
-	// Init block and grid size
+    dim3 blockSize(BETTER_TILE, BETTER_TILE);
+    dim3 gridSize((N + BETTER_TILE - 1) / BETTER_TILE, (M + BETTER_TILE - 1) / BETTER_TILE);
+    gemm_gpu_o2_kernel<<<gridSize, blockSize>>>(A, B, C, M, N, K);
 }
 
 

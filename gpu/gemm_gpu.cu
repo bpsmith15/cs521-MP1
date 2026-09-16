@@ -106,7 +106,11 @@ __global__ void gemm_gpu_o1_kernel(float* A, float* B, float* C, int M, int N, i
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
 
+	// don't write out of bounds, the data isn't guaranteed to be multiple of 16
     if (row < M && col < N) {
+
+		// same calculation, just use an accumulator and then assign to C at the end
+		// each thread only handles some C[i, j]
         float acc = 0.0f;
         for (int k = 0; k < K; k++) {
             acc += A[row * K + k] * B[k * N + col];
@@ -118,7 +122,13 @@ __global__ void gemm_gpu_o1_kernel(float* A, float* B, float* C, int M, int N, i
 
 void gemm_gpu_o1(float* A, float* B, float* C, int M, int N, int K)
 {
+	// chose some block size greater than one: "Parallelize the kernel across multiple Streaming Multiprocessors (SM) and thread blocks"
+	// we can optimize in o3
     dim3 blockSize(16, 16);
+
+	// Each thread will calc the value of C[i, j], 
+	// so each block will calc C[[i, i + blocksize], [j, j + blocksize]]
+	// as such, we need N / blocksize * M / blocksize (plus some c to avoid issues with non-multiples of 16)
     dim3 gridSize((N + blockSize.x - 1) / blockSize.x,
                   (M + blockSize.y - 1) / blockSize.y);
 
@@ -128,11 +138,11 @@ void gemm_gpu_o1(float* A, float* B, float* C, int M, int N, int K)
 #define TILE 16
 
 __global__ void gemm_gpu_o2_kernel(float* A, float* B, float* C, int M, int N, int K) {
-    __shared__ float As[TILE][TILE];
-    __shared__ float Bs[TILE][TILE];
+    __shared__ float A_tile[TILE][TILE];
+    __shared__ float B_tile[TILE][TILE];
 
-    int row = blockIdx.y * TILE + threadIdx.y;
-    int col = blockIdx.x * TILE + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
 
     float acc = 0.0f;
 
@@ -141,16 +151,17 @@ __global__ void gemm_gpu_o2_kernel(float* A, float* B, float* C, int M, int N, i
         int aCol = t * TILE + threadIdx.x;
         int bRow = t * TILE + threadIdx.y;
 
-        As[threadIdx.y][threadIdx.x] = (row < M && aCol < K) ? A[row * K + aCol] : 0.0f;
-        Bs[threadIdx.y][threadIdx.x] = (bRow < K && col < N) ? B[bRow * N + col] : 0.0f;
+		// load tile
+        A_tile[threadIdx.y][threadIdx.x] = (row < M && aCol < K) ? A[row * K + aCol] : 0.0f;
+        B_tile[threadIdx.y][threadIdx.x] = (col < N && bRow < K) ? B[bRow * N + col] : 0.0f;
 
-        __syncthreads();  // wait for whole tile to be loaded
+        __syncthreads();  // wait for tile to be fully loaded
 
         for (int k = 0; k < TILE; k++) {
-            acc += As[threadIdx.y][k] * Bs[k][threadIdx.x];
+            acc += A_tile[threadIdx.y][k] * B_tile[k][threadIdx.x];
         }
 
-        __syncthreads();  // wait before overwriting shared mem next iteration
+        __syncthreads();  // wait for entire tile before overwriting shared memory next iteration
     }
 
     if (row < M && col < N) {
@@ -165,14 +176,15 @@ void gemm_gpu_o2(float* A, float* B, float* C, int M, int N, int K)
     gemm_gpu_o2_kernel<<<gridSize, blockSize>>>(A, B, C, M, N, K);
 }
 
+
 #define BETTER_TILE 32
 
-__global__ void gemm_gpu_o3_kernel(float* A, float* B, float* C, int M, int N, int K) {
-    __shared__ float As[BETTER_TILE][BETTER_TILE];
-    __shared__ float Bs[BETTER_TILE][BETTER_TILE];
+__global__ void gemm_gpu_o2_kernel(float* A, float* B, float* C, int M, int N, int K) {
+    __shared__ float A_tile[BETTER_TILE][BETTER_TILE];
+    __shared__ float B_tile[BETTER_TILE][BETTER_TILE];
 
-    int row = blockIdx.y * BETTER_TILE + threadIdx.y;
-    int col = blockIdx.x * BETTER_TILE + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
 
     float acc = 0.0f;
 
@@ -181,16 +193,17 @@ __global__ void gemm_gpu_o3_kernel(float* A, float* B, float* C, int M, int N, i
         int aCol = t * BETTER_TILE + threadIdx.x;
         int bRow = t * BETTER_TILE + threadIdx.y;
 
-        As[threadIdx.y][threadIdx.x] = (row < M && aCol < K) ? A[row * K + aCol] : 0.0f;
-        Bs[threadIdx.y][threadIdx.x] = (bRow < K && col < N) ? B[bRow * N + col] : 0.0f;
+		// load tile
+        A_tile[threadIdx.y][threadIdx.x] = (row < M && aCol < K) ? A[row * K + aCol] : 0.0f;
+        B_tile[threadIdx.y][threadIdx.x] = (col < N && bRow < K) ? B[bRow * N + col] : 0.0f;
 
-        __syncthreads();  // wait for whole tile to be loaded
+        __syncthreads();  // wait for tile to be fully loaded
 
-        for (int k = 0; k < TILE; k++) {
-            acc += As[threadIdx.y][k] * Bs[k][threadIdx.x];
+        for (int k = 0; k < BETTER_TILE; k++) {
+            acc += A_tile[threadIdx.y][k] * B_tile[k][threadIdx.x];
         }
 
-        __syncthreads();  // wait before overwriting shared mem next iteration
+        __syncthreads();  // wait for entire tile before overwriting shared memory next iteration
     }
 
     if (row < M && col < N) {
@@ -202,7 +215,7 @@ void gemm_gpu_o3(float* A, float* B, float* C, int M, int N, int K)
 {
     dim3 blockSize(BETTER_TILE, BETTER_TILE);
     dim3 gridSize((N + BETTER_TILE - 1) / BETTER_TILE, (M + BETTER_TILE - 1) / BETTER_TILE);
-    gemm_gpu_o2_kernel<<<gridSize, blockSize>>>(A, B, C, M, N, K);
+    gemm_gpu_o3_kernel<<<gridSize, blockSize>>>(A, B, C, M, N, K);
 }
 
 

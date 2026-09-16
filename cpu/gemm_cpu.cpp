@@ -56,7 +56,7 @@ void gemm_cpu_o1(float* A, float* B, float *C, int M, int N, int K) {
 
 			// since we increment by just j in two places, placing it on the innermost loop will hopefully keep those arrays in the cache
 			for (int j = 0; j < N; j++) {
-				C[i * N + j]  += A[i * K + k]  * B[k * N + j];
+				C[i * N + j] += A[i * K + k] * B[k * N + j];
 			}
 		}
 	}
@@ -67,15 +67,48 @@ void gemm_cpu_o2(float* A, float* B, float *C, int M, int N, int K) {
 	// L1d cache:                               32 KiB (1 instance)
 	// L1i cache:                               32 KiB (1 instance)
 	// We care about the L1d cache in this instance (although they are identical here),
-	// so 32KiB is our size. The machine is a 64-bit machine, so each int is 4 bytes
-	// we have three arrays we want to keep in the cache each array traverses
-	// step * step * sizeof(float) each inner loop iteration
-	// so we want (step^2 * 4) * 3 < 32KiB -> step < 51.6
+	// so 32KiB is our size. The machine is a 64-bit machine, so each float is 4 bytes
+	// Since we are only tiling the inner 2 loops (k, j), given some step we have
+	// C -> step floats (row i, cols [jj, jj + step])
+	// A -> step floats (row i, cols [kk, kk + step])
+	// B -> step * step (rows [kk, kk + step], cols [jj + step]) floats
+	// 32 KiB -> 8,192 floats
+	// Thus, step^2 + 2*step < 8,192 -> step < 89.5
+	int step = 64;
 
-	int step = 40;
-	
-	// spec says to only tile inner two loops
+	// saving the matrices into local variables helped
 	for (int i = 0; i < M; i++) {
+		float* c_row = &C[i * N];
+		const float* a_row = &A[i * K];
+
+		for (int kk = 0; kk < K; kk += step) {
+			int k_end = std::min(kk + step, K);
+
+			for (int jj = 0; jj < N; jj += step) {
+				int j_end = std::min(jj + step, N);
+
+					for (int k = kk; k < k_end; k++) {
+						const float* b_row = &B[k * N];
+						float aik = a_row[k];
+
+						for (int j = jj; j < j_end; j++) {
+							c_row[j] += aik * b_row[j];
+						}
+					}
+			}
+		}
+	}
+}
+
+void gemm_cpu_o3(float* A, float* B, float *C, int M, int N, int K) {
+	int step = 64;
+	
+	// Parallelize the outer loop(s) using OpenMP
+	#pragma omp parallel for
+	for (int i = 0; i < M; i++) {
+		float* c_row = &C[i * N];
+		const float* a_row = &A[i * K];
+
 		for (int kk = 0; kk < K; kk += step) {
 			int k_end = std::min(kk + step, K);
 
@@ -83,36 +116,13 @@ void gemm_cpu_o2(float* A, float* B, float *C, int M, int N, int K) {
 				int j_end = std::min(jj + step, N);
 
 				for (int k = kk; k < k_end; k++) {
-					for (int j = jj; j < j_end; j++) {
-						C[i * N + j] += A[i * K + k] * B[k * N + j];
-					}
-				}
-			}
-		}
-	}
-}
+					const float* b_row = &B[k * N];
+					float aik = a_row[k];
 
-void gemm_cpu_o3(float* A, float* B, float *C, int M, int N, int K) {
-	int step = 50;
-	
-	// Parallelize the outer loop(s) using OpenMP
-	#pragma omp parallel for
-	for (int i = 0; i < M; i++) {
-		#pragma omp parallel for
-		for (int jj = 0; jj < N; jj += step) {
-			int j_end = std::min(jj + step, N);
-
-			#pragma omp parallel for
-			for (int kk = 0; kk < K; kk += step) {
-				int k_end = std::min(kk + step, K);
-
-				#pragma omp parallel for
-				for (int k = kk; k < k_end; k++) {
-
-					// vectorize the inner loop
+					// vectorize inner loop
 					#pragma omp simd
 					for (int j = jj; j < j_end; j++) {
-						C[i * N + j]  += A[i * K + k]  * B[k * N + j];
+						c_row[j] += aik * b_row[j];
 					}
 				}
 			}

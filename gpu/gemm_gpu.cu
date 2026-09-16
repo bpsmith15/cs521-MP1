@@ -179,7 +179,7 @@ void gemm_gpu_o2(float* A, float* B, float* C, int M, int N, int K)
 
 #define BETTER_TILE 32
 
-__global__ void gemm_gpu_o2_kernel(float* A, float* B, float* C, int M, int N, int K) {
+__global__ void gemm_gpu_o3_kernel(float* A, float* B, float* C, int M, int N, int K) {
     __shared__ float A_tile[BETTER_TILE][BETTER_TILE];
     __shared__ float B_tile[BETTER_TILE][BETTER_TILE];
 
